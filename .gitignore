@@ -1,0 +1,13 @@
+# 真实密钥与运行时生成的文件，一律不入库
+.env
+stacks/*/.env
+stacks/caddy/Caddyfile
+stacks/proxy/config/
+stacks/proxy/certs/
+state/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,2 @@
+# 各 stack 的 install.sh 会把站点块写到这里。
+# 这个占位文件让 Caddyfile 里的 import 通配符始终能匹配到至少一个文件。

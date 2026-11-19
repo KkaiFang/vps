@@ -1,0 +1,63 @@
+{
+  "log": {
+    "level": "{{LOG_LEVEL}}",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-reality",
+      "listen": "::",
+      "listen_port": {{PROXY_REALITY_PORT}},
+      "users": [
+        {
+          "uuid": "{{PROXY_UUID}}",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "{{PROXY_REALITY_SNI}}",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "{{PROXY_REALITY_SNI}}",
+            "server_port": 443
+          },
+          "private_key": "{{PROXY_REALITY_PRIVATE_KEY}}",
+          "short_id": [
+            "{{PROXY_REALITY_SHORT_ID}}"
+          ]
+        }
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hysteria2",
+      "listen": "::",
+      "listen_port": {{PROXY_HY2_PORT}},
+      "users": [
+        {
+          "password": "{{PROXY_HY2_PASSWORD}}"
+        }
+      ],
+      "ignore_client_bandwidth": true,
+      "masquerade": {
+        "type": "proxy",
+        "url": "https://{{MASK_HOST}}",
+        "rewrite_host": true
+      },
+      "tls": {
+        "enabled": true,
+        "certificate_path": "/etc/sing-box/certs/fullchain.pem",
+        "key_path": "/etc/sing-box/certs/privkey.pem"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+}

@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export REPO
+
+# shellcheck source=lib/log.sh
+. "$REPO/lib/log.sh"
+# shellcheck source=lib/config.sh
+. "$REPO/lib/config.sh"
+# shellcheck source=lib/detect.sh
+. "$REPO/lib/detect.sh"
+# shellcheck source=lib/compose.sh
+. "$REPO/lib/compose.sh"
+# shellcheck source=lib/site.sh
+. "$REPO/lib/site.sh"
+
+STACKS=(caddy proxy monitor apps)
+
+# 需要 root 才能读 .env、操作 docker 的子命令
+need_root() {
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || exec sudo -- "$0" "$@"
+}
+
+load() {
+  [[ -f "$REPO/.env" ]] || die "还没有配置：先在 $REPO 下执行 sudo ./install.sh"
+  load_env_file "$REPO/.env"
+}
+
+# ---------------------------------------------------------------- 子命令
+
+cmd_help() {
+  cat <<'EOF'
+用法：sudo ./vps <命令>
+
+  status            所有容器的状态、端口、健康情况
+  up [stack...]     启动（不指定则启动全部已启用的 stack）
+  down [stack...]   停止
+  restart [stack]   重启
+  logs <stack>      跟踪日志，如 ./vps logs caddy
+  links             输出代理订阅链接和二维码
+  sites             查看当前生效的域名映射
+  update            拉取新镜像并重建容器
+  doctor            体检：端口、防火墙、证书、磁盘、时间
+  edit              用 $EDITOR 打开 .env
+EOF
+}
+
+cmd_status() {
+  load
+  local stack
+
+  for stack in "${STACKS[@]}"; do
+    [[ -f "$REPO/stacks/$stack/compose.yaml" ]] || continue
+    printf '\n%s── %s ──%s\n' "$C_BLUE" "$stack" "$C_RESET"
+    # 没启动的 stack 用 run --rm 起来会很吵，直接看容器表
+    dc "$stack" ps --format 'table {{.Name}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null | sed '1d' || true
+  done
+
+  printf '\n%s── 监听端口 ──%s\n' "$C_BLUE" "$C_RESET"
+  ss -tulpnH 2>/dev/null | awk '{split($5,a,":"); print a[length(a)]"/"$1}' \
+    | sort -u -t/ -k1,1n | awk -F/ '{printf "  %-6s %s\n", $1, $2}' || true
+}
+
+cmd_up()  { load; _each_stack up "$@"; }
+cmd_down() { load; _each_stack down "$@"; }
+cmd_restart() { load; _each_stack restart "$@"; }
+
+_each_stack() {
+  local action="$1"; shift
+  local -a targets=("$@")
+  local stack
+
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    env_is_true ENABLE_CADDY && targets+=(caddy)
+    env_is_true ENABLE_PROXY && targets+=(proxy)
+    env_is_true ENABLE_MONITOR && targets+=(monitor)
+    env_is_true ENABLE_APPS && targets+=(apps)
+  fi
+
+  for stack in ${targets[@]+"${targets[@]}"}; do
+    log_info "${stack}：$action"
+    case "$action" in
+      # down 不接受 -d
+      down|stop) dc "$stack" "$action" ;;
+      *)         dc "$stack" "$action" -d ;;
+    esac
+  done
+}
+
+cmd_logs() {
+  local stack="${1:-}"
+  [[ -n $stack ]] || die "用法：./vps logs <stack>（${STACKS[*]}）"
+  load
+  dc "$stack" logs -f --tail=200
+}
+
+urlencode() {
+  jq -rn --arg s "$1" '$s|@uri' 2>/dev/null \
+    || printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/#/%23/g'
+}
+
+cmd_links() {
+  load
+  local ip name uuid pbk sid sni hport rport password link
+
+  ip="$(public_ip)"
+  [[ -n $ip ]] || ip="$(env_get VPS_IP)"
+  [[ -n $ip ]] || die "取不到公网 IP，请在 .env 里设置 VPS_IP"
+
+  name="$(env_get PROXY_NODE_NAME vps-node)"
+  uuid="$(env_get PROXY_UUID)"
+  [[ -n $uuid ]] || die "还没安装代理：sudo ./install.sh --only proxy"
+
+  pbk="$(env_get PROXY_REALITY_PUBLIC_KEY)"
+  sid="$(env_get PROXY_REALITY_SHORT_ID)"
+  sni="$(env_get PROXY_REALITY_SNI)"
+  rport="$(env_get PROXY_REALITY_PORT 8443)"
+  hport="$(env_get PROXY_HY2_PORT 8444)"
+  password="$(env_get PROXY_HY2_PASSWORD)"
+
+  link="vless://${uuid}@${ip}:${rport}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni}&fp=chrome&pbk=${pbk}&sid=${sid}&type=tcp&headerType=none#$(urlencode "${name}-reality")"
+
+  printf '\n%s── VLESS + REALITY ──%s\n%s\n\n' "$C_BLUE" "$C_RESET" "$link"
+  _qrcode "$link"
+
+  if [[ -n $password ]]; then
+    local hy2sni
+    hy2sni="$(env_get PROXY_HY2_SNI)"
+    [[ -z $hy2sni ]] && hy2sni="$(first_domain)"
+    [[ -z $hy2sni ]] && hy2sni="$ip"
+
+    link="hysteria2://${password}@${ip}:${hport}/?sni=${hy2sni}&insecure=1#$(urlencode "${name}-hy2")"
+    printf '\n%s── Hysteria2 ──%s\n%s\n\n' "$C_BLUE" "$C_RESET" "$link"
+    _qrcode "$link"
+  fi
+
+  printf '%s提示：REALITY 的指纹(fp)用 chrome 最稳；Hysteria2 自签证书务必开 insecure%s\n\n' "$C_DIM" "$C_RESET"
+}
+
+_qrcode() {
+  if have qrencode; then
+    qrencode -t ANSIUTF8 "$1"
+  else
+    log_dim "（apt install qrencode 可直接在这里显示二维码）"
+  fi
+}
+
+cmd_sites() {
+  load
+  init_sites
+  local key domain found=0
+  for key in DOMAIN_MONITOR DOMAIN_PORTAINER DOMAIN_ALIST DOMAIN_VAULT DOMAIN_MEMOS; do
+    domain="$(env_get "$key")"
+    if [[ -n $domain ]]; then
+      printf '  %-18s https://%s\n' "${key#DOMAIN_}" "$domain"
+      found=1
+    fi
+  done
+  (( found )) || log_dim "还没有配置任何域名（.env 里的 DOMAIN_*）"
+}
+
+cmd_update() {
+  load
+  local stack
+
+  log_info "拉取新镜像"
+  for stack in caddy proxy monitor apps; do
+    [[ -f "$REPO/stacks/$stack/compose.yaml" ]] || continue
+    dc "$stack" pull -q 2>/dev/null || log_warn "$stack 拉取失败，跳过"
+  done
+
+  log_info "重建有变化的容器"
+  env_is_true ENABLE_CADDY && dc caddy up -d
+  env_is_true ENABLE_PROXY && dc proxy up -d
+  env_is_true ENABLE_MONITOR && dc monitor up -d
+  env_is_true ENABLE_APPS && dc apps up -d
+
+  log_info "清理旧镜像"
+  docker image prune -f --filter 'dangling=true' >/dev/null 2>&1 || true
+
+  log_ok "更新完成"
+  docker ps --format 'table {{.Names}}\t{{.Status}}'
+}
+
+cmd_doctor() {
+  load
+  local problems=0
+  local docker_ok=false
+
+  log_step "环境"
+
+  if have docker && docker info >/dev/null 2>&1; then
+    docker_ok=true
+    log_ok "Docker $(docker --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+  else
+    log_err "Docker 不可用"; problems=$((problems + 1))
+  fi
+
+  if have ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    local ssh_port
+    ssh_port="$(env_get SSH_PORT 22)"
+    if ufw status | grep -qE "^${ssh_port}/tcp\s+ALLOW"; then
+      log_ok "防火墙已启用，SSH 端口 ${ssh_port} 已放行"
+    else
+      log_err "防火墙已启用，但 SSH 端口 ${ssh_port} 未放行 —— 现在退出可能有风险"
+      problems=$((problems + 1))
+    fi
+  else
+    log_warn "ufw 未启用"
+  fi
+
+  if have systemctl && systemctl is-active --quiet fail2ban; then
+    log_ok "fail2ban 运行中"
+  else
+    log_warn "fail2ban 未运行"
+  fi
+
+  if has_swap; then
+    log_ok "swap：$(swapon --show=size --noheadings | tr '\n' ' ')"
+  else
+    log_warn "没有 swap"
+  fi
+
+  log_step "容器"
+  if $docker_ok; then
+    local name state
+    while read -r name state; do
+      [[ -z $name ]] && continue
+      if [[ $state = running ]]; then
+        log_ok "$name"
+      else
+        log_err "${name}：$state"; problems=$((problems + 1))
+      fi
+    done < <(docker ps -a --format '{{.Names}} {{.State}}' 2>/dev/null)
+  else
+    log_dim "Docker 不可用，跳过"
+  fi
+
+  log_step "证书"
+  if $docker_ok && docker ps --format '{{.Names}}' | grep -qx caddy; then
+    local ep
+    for ep in $(configured_domains); do
+      if docker exec caddy sh -c "ls /data/caddy/certificates/*/${ep} >/dev/null 2>&1"; then
+        log_ok "$ep 证书已签发"
+      else
+        log_warn "$ep 尚未签发（检查域名解析是否指向本机）"
+      fi
+    done
+  else
+    log_warn "Caddy 未运行"
+  fi
+
+  log_step "资源"
+  df -h / 2>/dev/null | awk 'NR==2 {printf "  磁盘  %s 已用 %s / %s（%s）\n", $1, $3, $2, $5}'
+  free -h 2>/dev/null | awk 'NR==2 {printf "  内存  已用 %s / %s\n", $3, $2}'
+  local load
+  load="$(cut -d' ' -f1-3 /proc/loadavg)"
+  log_dim " 负载  $load"
+
+  log_step "时间"
+  if have timedatectl; then
+    timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes \
+      && log_ok "NTP 已同步" \
+      || log_warn "NTP 未同步（REALITY 对时间偏差敏感，偏差过大会连接失败）"
+  fi
+
+  printf '\n'
+  if (( problems == 0 )); then
+    log_ok "体检通过"
+  else
+    log_warn "发现 $problems 个问题"
+    return 1
+  fi
+}
+
+cmd_edit() {
+  load
+  exec "${EDITOR:-vi}" "$REPO/.env"
+}
+
+# ---------------------------------------------------------------- 分发
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+
+  case "$cmd" in
+    status)        need_root status "$@"; cmd_status "$@" ;;
+    up|start)      need_root up "$@"; cmd_up "$@" ;;
+    down|stop)     need_root down "$@"; cmd_down "$@" ;;
+    restart)       need_root restart "$@"; cmd_restart "$@" ;;
+    logs)          need_root logs "$@"; cmd_logs "$@" ;;
+    links)         cmd_links "$@" ;;
+    sites)         cmd_sites "$@" ;;
+    update)        need_root update "$@"; cmd_update "$@" ;;
+    doctor)        need_root doctor "$@"; cmd_doctor "$@" ;;
+    edit)          need_root edit "$@"; cmd_edit "$@" ;;
+    -h|--help|help) cmd_help ;;
+    *) log_err "未知命令：$cmd"; cmd_help; exit 1 ;;
+  esac
+}
+
+main "$@"

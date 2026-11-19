@@ -1,0 +1,67 @@
+name: monitor
+
+services:
+  # 宕机与证书到期监控
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - kuma_data:/app/data
+    networks:
+      - edge
+
+  # 网页版日志查看，挂在 Caddy 后面
+  dozzle:
+    image: ghcr.io/amir20/dozzle:latest
+    container_name: dozzle
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - DOZZLE_LEVEL=info
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - edge
+
+  # 容器管理面板。能控制 Docker 本身就等于 root 权限，必须放在域名 + 强密码后面，
+  # 或者干脆不配域名、用 SSH 隧道访问
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      # Portainer 需要写权限来管理容器，只读挂载会直接启动失败。
+      # 这是本次部署里权限最大的一个挂载点 —— 所以务必配 DOMAIN_PORTAINER 并设强密码，
+      # 或者干脆不配域名、改用 ssh -L 9000:localhost:9000 访问
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - edge
+
+  # 资源面板。默认关闭：打开需要 host 网络，防火墙规则要配合改，
+  # 而且容器能读到的宿主机指标更多，暴露面也更大。确认需要时再取消注释并重跑。
+  # netdata:
+  #   image: netdata/netdata:stable
+  #   container_name: netdata
+  #   restart: unless-stopped
+  #   pid: host
+  #   network_mode: host
+  #   volumes:
+  #     - netdata_config:/etc/netdata
+  #     - netdata_lib:/var/lib/netdata
+
+networks:
+  edge:
+    name: edge
+    external: true
+
+volumes:
+  kuma_data:
+  portainer_data:
+  # netdata_config:
+  # netdata_lib:

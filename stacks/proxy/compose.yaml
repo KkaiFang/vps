@@ -1,0 +1,14 @@
+name: proxy
+
+# host 网络模式：代理需要拿到真实客户端 IP，且端口直接由 ufw 管控。
+# bridge + 发布端口会绕过 ufw，所以这里不用。
+services:
+  proxy:
+    image: ghcr.io/sagernet/sing-box:${SINGBOX_VERSION:-latest}
+    container_name: proxy
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./config:/etc/sing-box:ro
+      - ./certs:/etc/sing-box/certs:ro
+    command: ["run", "-c", "/etc/sing-box/config.json"]

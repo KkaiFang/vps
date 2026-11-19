@@ -1,0 +1,54 @@
+name: apps
+
+services:
+  # 网盘聚合：挂载阿里云盘 / OneDrive / S3 等
+  alist:
+    image: xhofe/alist:latest
+    container_name: alist
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - UMASK=022
+    volumes:
+      - alist_data:/opt/alist/data
+    networks:
+      - edge
+
+  # Bitwarden 兼容的密码管理，客户端可以直接用 Bitwarden 官方 App
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - SIGNUPS_ALLOWED=${VAULT_SIGNUPS_ALLOWED:-false}
+      - ADMIN_TOKEN=${VAULT_ADMIN_TOKEN}
+      - DOMAIN=${DOMAIN_VAULT:-}
+      # 不向 Let's Encrypt 上报指标
+      - SHOW_PASSWORD_HINT=false
+    volumes:
+      - vaultwarden_data:/data
+    networks:
+      - edge
+
+  # 轻量笔记，首个注册的账号自动成为管理员
+  memos:
+    image: neosmemo/memos:stable
+    container_name: memos
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - memos_data:/var/opt/memos
+    networks:
+      - edge
+
+networks:
+  edge:
+    name: edge
+    external: true
+
+volumes:
+  alist_data:
+  vaultwarden_data:
+  memos_data:
