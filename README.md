@@ -10,12 +10,12 @@
 
 ```bash
 # 用 git（机器上没装 git 的话：apt update && apt install -y git）
-git clone https://github.com/<你的用户名>/vps.git /root/vps
+git clone https://github.com/KkaiFang/vps.git /root/vps
 cd /root/vps
 sudo ./install.sh
 
 # 或者不装 git，直接下载压缩包
-curl -fsSL https://codeload.github.com/<你的用户名>/vps/tar.gz/refs/heads/main \
+curl -fsSL https://codeload.github.com/KkaiFang/vps/tar.gz/refs/heads/main \
   | tar xz -C /root && cd /root/vps-main
 sudo ./install.sh
 ```
